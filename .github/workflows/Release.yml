@@ -2,6 +2,15 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'release还是prerelease'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - 'release'
+          - 'prerelease'
   repository_dispatch:
     types: [release, prerelease]
 
@@ -18,7 +27,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ github.event.action }}" = "prerelease" ]; then
+          if [[ "${{ github.event_name }}" == "repository_dispatch" && "${{ github.event.action }}" == "prerelease" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "prerelease" ]]; then
+          #if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ github.event.action }}" = "prerelease" ]; then
             version_file="version-prerelease"
             prerelease=true
           else
@@ -39,13 +49,6 @@ jobs:
           echo "update_apple=false" >> "$GITHUB_ENV"
           echo "prerelease=${prerelease}" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
-        with:
-          repository: SagerNet/sing-box
-          path: box
-          submodules: 'true'
-          ref: ${{ env.tag }}
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -62,7 +65,10 @@ jobs:
       - name: Build TIPA and xcframework
         run: |
           set -euo pipefail
-          cd box
+          cd $HOME
+          
+          echo "sing-box-${{ env.tag }}" >> $GITHUB_STEP_SUMMARY
+          git clone -b ${{ env.tag }} --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
 
           if [ "${{ env.update_apple }}" = "true" ]; then
             rm -rf clients/apple
@@ -73,12 +79,14 @@ jobs:
           export APPLICATION_NAME=sing-box
           export SCHEME_NAME=SFI
 
+          cd $HOME/sing-box
+
           make lib_install
           export PATH="$PATH:$(go env GOPATH)/bin"
 
           go run ./cmd/internal/build_libbox -target apple -platform ios,tvos,macos
-          cp -r Libbox.xcframework clients/apple/
           zip -ry ./Libbox.xcframework.zip ./Libbox.xcframework
+          mv Libbox.xcframework clients/apple
 
           cd clients/apple
 
@@ -159,5 +167,5 @@ jobs:
           name: ${{ env.tag_no_v }}
           body: "Compiled from source tag: ${{ env.tag }}"
           files: |
-            box/Libbox.xcframework.zip
+            sing-box/Libbox.xcframework.zip
             sing-box-*.tipa
