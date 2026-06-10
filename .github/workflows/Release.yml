@@ -43,6 +43,7 @@ jobs:
         with:
           repository: SagerNet/sing-box
           path: box
+          submodules: 'true'
           ref: ${{ env.tag }}
 
       - name: Setup Go
@@ -58,19 +59,7 @@ jobs:
       - name: Install ldid
         run: brew install ldid
 
-      - name: Setup Gomobile
-        run: |
-          cd box
-          make lib_install
-          gomobile init
-
-      - name: Build xcframework
-        run: |
-          cd box
-          go run ./cmd/internal/build_libbox -target apple -platform ios,tvos,macos
-          zip -ry ./Libbox.xcframework.zip ./Libbox.xcframework
-
-      - name: Build TIPA
+      - name: Build TIPA and xcframework
         run: |
           set -euo pipefail
           cd box
@@ -80,8 +69,16 @@ jobs:
             git clone --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box-for-apple.git clients/apple
           fi
 
-          go run ./cmd/internal/build_libbox -target apple -platform ios
-          mv Libbox.xcframework clients/apple
+          export XCODEPROJ_NAME=sing-box
+          export APPLICATION_NAME=sing-box
+          export SCHEME_NAME=SFI
+
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+
+          go run ./cmd/internal/build_libbox -target apple -platform ios,tvos,macos
+          cp Libbox.xcframework clients/apple
+          zip -ry ./Libbox.xcframework.zip ./Libbox.xcframework
 
           cd clients/apple
 
