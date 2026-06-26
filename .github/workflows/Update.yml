@@ -1,13 +1,15 @@
 name: Update sing-box version
 
 on:
-#  schedule:
-#    - cron: "0 2 * * *" 
+  schedule:
+    - cron: '0 2 */3 * *' 
   workflow_dispatch:
 
 jobs:
   update-version:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
     permissions:
       contents: write
@@ -17,6 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Get latest sing-box version
+        id: latest
         run: |
           latest_release=$(curl -fsSL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name', ''))")
           latest_prerelease=$(curl -fsSL "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=50" | python3 -c "import json,sys; releases=json.load(sys.stdin); print(next((r['tag_name'] for r in releases if r.get('prerelease') and not r.get('draft') and r.get('tag_name')), ''))")
@@ -24,62 +27,49 @@ jobs:
             echo "failed to get latest versions"
             exit 1
           fi
-          echo "latest_release_version=$latest_release" >> $GITHUB_ENV
-          echo "latest_prerelease_version=$latest_prerelease" >> $GITHUB_ENV
+          echo "release=$latest_release" >> $GITHUB_OUTPUT
+          echo "prerelease=$latest_prerelease" >> $GITHUB_OUTPUT
 
-      - name: Compare release version
+      - name: Compare repository variables
+        id: compare
         run: |
-          if [ -f version ]; then
-            current_release=$(cat version)
-          else
-            current_release=""
-          fi
-          if [ "$current_release" != "${{ env.latest_release_version }}" ]; then
-            echo "release_update_needed=true" >> $GITHUB_ENV
-          else
-            echo "release_update_needed=false" >> $GITHUB_ENV
-          fi
+          current_release="${{ vars.RELEASE }}"
+          current_prerelease="${{ vars.PRERELEASE }}"
 
-      - name: Compare prerelease version
-        run: |
-          if [ -f version-prerelease ]; then
-            current_prerelease=$(cat version-prerelease)
+          if [ "$current_release" != "${{ steps.latest.outputs.release }}" ]; then
+            echo "release_update_needed=true" >> $GITHUB_OUTPUT
           else
-            current_prerelease=""
-          fi
-          if [ "$current_prerelease" != "${{ env.latest_prerelease_version }}" ]; then
-            echo "prerelease_update_needed=true" >> $GITHUB_ENV
-          else
-            echo "prerelease_update_needed=false" >> $GITHUB_ENV
+            echo "release_update_needed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Update release version file
-        if: env.release_update_needed == 'true'
-        run: |
-          echo "${{ env.latest_release_version }}" > version
+          if [ "$current_prerelease" != "${{ steps.latest.outputs.prerelease }}" ]; then
+            echo "prerelease_update_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease_update_needed=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Update prerelease version file
-        if: env.prerelease_update_needed == 'true'
+      - name: Update release variable
+        if: steps.compare.outputs.release_update_needed == 'true'
         run: |
-          echo "${{ env.latest_prerelease_version }}" > version-prerelease
+          gh variable set RELEASE --body "${{ steps.latest.outputs.release }}"
 
-      - name: Commit manifest & tag
-        if: env.release_update_needed == 'true' || env.prerelease_update_needed == 'true'
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Sync versions release=${{ env.latest_release_version }} prerelease=${{ env.latest_prerelease_version }}"
-          commit_user_name: "liujixings"
-          commit_user_email: "liujixings@outlook.com"
-          file_pattern: version*
+      - name: Update prerelease variable
+        if: steps.compare.outputs.prerelease_update_needed == 'true'
+        run: |
+          gh variable set PRERELEASE --body "${{ steps.latest.outputs.prerelease }}"
 
       - name: Repository Dispatch (release)
-        if: env.release_update_needed == 'true'
+        if: steps.compare.outputs.release_update_needed == 'true'
         uses: peter-evans/repository-dispatch@v4
         with:
+          token: ${{ secrets.GH_TOKEN }}
           event-type: release
+          client-payload: '{"version": "${{ steps.latest.outputs.release }}"}'
 
       - name: Repository Dispatch (prerelease)
-        if: env.prerelease_update_needed == 'true'
+        if: steps.compare.outputs.prerelease_update_needed == 'true'
         uses: peter-evans/repository-dispatch@v4
         with:
+          token: ${{ secrets.GH_TOKEN }}
           event-type: prerelease
+          client-payload: '{"version": "${{ steps.latest.outputs.prerelease }}"}'
