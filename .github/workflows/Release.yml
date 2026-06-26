@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'release还是prerelease'
+        description: 'release 还是 prerelease'
         required: false
         default: 'release'
         type: choice
@@ -19,9 +19,15 @@ on:
   repository_dispatch:
     types: [release, prerelease]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: macos-26
+    timeout-minutes: 60
+
     permissions:
       contents: write
 
@@ -33,23 +39,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event_name }}" == "repository_dispatch" && "${{ github.event.action }}" == "prerelease" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "prerelease" ]]; then
-            prerelease=true
+          is_prerelease=false
+          update_apple=false
+          fallback_tag="${{ vars.RELEASE }}"
+
+          if [[ "${{ github.event_name }}" == "repository_dispatch" && "${{ github.event.action }}" == "prerelease" ]] || \
+             [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "prerelease" ]]; then
+            is_prerelease=true
             update_apple=true
             fallback_tag="${{ vars.PRERELEASE }}"
-          else
-            prerelease=false
-            update_apple=false
-            fallback_tag="${{ vars.RELEASE }}"
           fi
 
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            tag="${{ github.event.client_payload.version }}"
-          elif [ -n "${{ inputs.version }}" ]; then
-            tag="${{ inputs.version }}"
-          else
-            tag="$fallback_tag"
-          fi
+          case "${{ github.event_name }}" in
+            repository_dispatch)
+              tag="${{ github.event.client_payload.version }}"
+              ;;
+            workflow_dispatch)
+              if [ -n "${{ inputs.version }}" ]; then
+                tag="${{ inputs.version }}"
+              else
+                tag="$fallback_tag"
+              fi
+              ;;
+          esac
 
           if [ -z "$tag" ]; then
             echo "Version not found for current release target"
@@ -60,12 +72,13 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "tag_no_v=${tag_no_v}" >> "$GITHUB_OUTPUT"
           echo "update_apple=${update_apple}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "^1.25"
+          cache: true
 
       - name: Setup Xcode stable
         run: |
@@ -73,21 +86,25 @@ jobs:
           xcodebuild -version >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install ldid
-        run: brew install ldid
+        run: |
+          brew list ldid &>/dev/null || brew install ldid
 
       - name: Build TIPA and xcframework
+        id: build
         run: |
           set -euo pipefail
-          cd $HOME
-          
-          echo "sing-box-${{ steps.resolve.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          git clone -b ${{ steps.resolve.outputs.tag }} --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
+          cd "$HOME"
 
-          cd $HOME/sing-box
+          echo "sing-box-${{ steps.resolve.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          git clone -b "${{ steps.resolve.outputs.tag }}" --recurse-submodules --depth 1 \
+            https://github.com/SagerNet/sing-box.git
+
+          cd "$HOME/sing-box"
 
           if [ "${{ steps.resolve.outputs.update_apple }}" = "true" ]; then
             rm -rf clients/apple
-            git clone --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box-for-apple.git clients/apple
+            git clone --recurse-submodules --depth 1 \
+              https://github.com/SagerNet/sing-box-for-apple.git clients/apple
           fi
 
           export XCODEPROJ_NAME=sing-box
@@ -105,8 +122,8 @@ jobs:
           cd clients/apple
 
           xcodebuild \
-            -project $XCODEPROJ_NAME.xcodeproj \
-            -scheme $SCHEME_NAME \
+            -project "$XCODEPROJ_NAME.xcodeproj" \
+            -scheme "$SCHEME_NAME" \
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -sdk iphoneos \
@@ -129,19 +146,17 @@ jobs:
           cp -rp "$APP_PATH" packages/Payload
           cd packages
           zip -qr sing-box.tipa Payload
-          mv sing-box.tipa "${GITHUB_WORKSPACE}/sing-box-${{ steps.resolve.outputs.tag_no_v }}.tipa"
-          cd "${GITHUB_WORKSPACE}"
-          echo -e "SHA256 Checksum:\n$(shasum -a 256 sing-box-${{ steps.resolve.outputs.tag_no_v }}.tipa)" >> "$GITHUB_STEP_SUMMARY"
+          mv sing-box.tipa "$GITHUB_WORKSPACE/sing-box-${{ steps.resolve.outputs.tag_no_v }}.tipa"
+          cd "$GITHUB_WORKSPACE"
 
-      - name: Detect checksum
-        id: checksum
-        shell: bash
-        run: |
-          checksum=$(shasum -a 256 "$GITHUB_WORKSPACE/Libbox.xcframework.zip" | awk '{print $1}')
-          echo "file_checksum=$checksum" >> "$GITHUB_OUTPUT"
+          # Compute checksum for Package.swift
+          checksum=$(shasum -a 256 Libbox.xcframework.zip | awk '{print $1}')
+          echo "file_checksum=${checksum}" >> "$GITHUB_OUTPUT"
+
+          printf 'SHA256 Checksum:\n%s\n' "$(shasum -a 256 "sing-box-${{ steps.resolve.outputs.tag_no_v }}.tipa")" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update Package.swift
-        shell: bash
         run: |
           cat > Package.swift << EOF
           // swift-tools-version: 5.7
@@ -158,7 +173,7 @@ jobs:
               .binaryTarget(
                 name: "Libbox",
                 url: "https://github.com/liujixings/sing-box-lib/releases/download/${{ steps.resolve.outputs.tag }}/Libbox.xcframework.zip",
-                checksum: "${{ steps.checksum.outputs.file_checksum }}"
+                checksum: "${{ steps.build.outputs.file_checksum }}"
               )
             ]
           )
