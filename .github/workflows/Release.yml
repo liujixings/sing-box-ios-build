@@ -21,7 +21,7 @@ on:
 
 jobs:
   release:
-    runs-on: macOS-15
+    runs-on: macos-latest
     permissions:
       contents: write
 
