@@ -11,6 +11,11 @@ on:
         options:
           - 'release'
           - 'prerelease'
+      version:
+        description: '手动指定版本号，留空则使用仓库变量'
+        required: false
+        default: ''
+        type: string
   repository_dispatch:
     types: [release, prerelease]
 
@@ -24,30 +29,36 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Resolve release target
+        id: resolve
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event_name }}" == "repository_dispatch" && "${{ github.event.action }}" == "prerelease" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "prerelease" ]]; then
-          #if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ github.event.action }}" = "prerelease" ]; then
-            version_file="version-prerelease"
             prerelease=true
+            fallback_tag="${{ vars.PRERELEASE }}"
           else
-            version_file="version"
             prerelease=false
+            fallback_tag="${{ vars.RELEASE }}"
           fi
 
-          if [ -f "$version_file" ]; then
-            tag="$(cat "$version_file")"
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            tag="${{ github.event.client_payload.version }}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            tag="${{ inputs.version }}"
           else
-            echo "Version file not found: $version_file"
+            tag="$fallback_tag"
+          fi
+
+          if [ -z "$tag" ]; then
+            echo "Version not found for current release target"
             exit 1
           fi
 
           tag_no_v="${tag#v}"
-          echo "tag=${tag}" >> "$GITHUB_ENV"
-          echo "tag_no_v=${tag_no_v}" >> "$GITHUB_ENV"
-          echo "update_apple=true" >> "$GITHUB_ENV"
-          echo "prerelease=${prerelease}" >> "$GITHUB_ENV"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "tag_no_v=${tag_no_v}" >> "$GITHUB_OUTPUT"
+          echo "update_apple=true" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -67,10 +78,10 @@ jobs:
           set -euo pipefail
           cd $HOME
           
-          echo "sing-box-${{ env.tag }}" >> $GITHUB_STEP_SUMMARY
-          git clone -b ${{ env.tag }} --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
+          echo "sing-box-${{ steps.resolve.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          git clone -b ${{ steps.resolve.outputs.tag }} --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
 
-          if [ "${{ env.update_apple }}" = "true" ]; then
+          if [ "${{ steps.resolve.outputs.update_apple }}" = "true" ]; then
             rm -rf clients/apple
             git clone --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box-for-apple.git clients/apple
           fi
@@ -86,14 +97,15 @@ jobs:
 
           go run ./cmd/internal/build_libbox -target apple -platform ios,tvos,macos
           zip -ry ./Libbox.xcframework.zip ./Libbox.xcframework
+          cp ./Libbox.xcframework.zip "$GITHUB_WORKSPACE/Libbox.xcframework.zip"
           mv Libbox.xcframework clients/apple
 
           cd clients/apple
 
           xcodebuild \
-            -project sing-box.xcodeproj \
-            -scheme SFI \
-            -destination "generic/platform=iOS" \
+            -project $XCODEPROJ_NAME.xcodeproj \
+            -scheme $SCHEME_NAME \
+            -destination 'generic/platform=iOS' \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath DerivedData \
@@ -106,24 +118,25 @@ jobs:
             COMPILER_INDEX_STORE_ENABLE=NO \
             SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO
 
-          app_path="DerivedData/Build/Products/Release-iphoneos/sing-box.app"
-          ldid -SSFI/SFI.entitlements "$app_path/sing-box"
-          ldid -SExtension/Extension.entitlements "$app_path/PlugIns/Extension.appex/Extension"
-          ldid -SIntentsExtension/IntentsExtension.entitlements "$app_path/Extensions/IntentsExtension.appex/IntentsExtension"
+          APP_PATH="DerivedData/Build/Products/Release-iphoneos/$APPLICATION_NAME.app"
+          ldid -SSFI/SFI.entitlements "$APP_PATH/$APPLICATION_NAME"
+          ldid -SExtension/Extension.entitlements "$APP_PATH/PlugIns/Extension.appex/Extension"
+          ldid -SIntentsExtension/IntentsExtension.entitlements "$APP_PATH/Extensions/IntentsExtension.appex/IntentsExtension"
 
           mkdir -p packages/Payload
-          cp -rp "$app_path" packages/Payload
+          cp -rp "$APP_PATH" packages/Payload
           cd packages
           zip -qr sing-box.tipa Payload
-          mv sing-box.tipa "${GITHUB_WORKSPACE}/sing-box-${{ env.tag_no_v }}.tipa"
+          mv sing-box.tipa "${GITHUB_WORKSPACE}/sing-box-${{ steps.resolve.outputs.tag_no_v }}.tipa"
           cd "${GITHUB_WORKSPACE}"
-          echo -e "SHA256 Checksum:\n$(shasum -a 256 sing-box-${{ env.tag_no_v }}.tipa)" >> "$GITHUB_STEP_SUMMARY"
+          echo -e "SHA256 Checksum:\n$(shasum -a 256 sing-box-${{ steps.resolve.outputs.tag_no_v }}.tipa)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Detect checksum
+        id: checksum
         shell: bash
         run: |
-          checksum=$(shasum -a 256 box/Libbox.xcframework.zip | awk '{print $1}')
-          echo "file_checksum=$checksum" >> "$GITHUB_ENV"
+          checksum=$(shasum -a 256 "$GITHUB_WORKSPACE/Libbox.xcframework.zip" | awk '{print $1}')
+          echo "file_checksum=$checksum" >> "$GITHUB_OUTPUT"
 
       - name: Update Package.swift
         shell: bash
@@ -142,8 +155,8 @@ jobs:
             targets: [
               .binaryTarget(
                 name: "Libbox",
-                url: "https://github.com/liujixings/sing-box-lib/releases/download/${{ env.tag }}/Libbox.xcframework.zip",
-                checksum: "${{ env.file_checksum }}"
+                url: "https://github.com/liujixings/sing-box-lib/releases/download/${{ steps.resolve.outputs.tag }}/Libbox.xcframework.zip",
+                checksum: "${{ steps.checksum.outputs.file_checksum }}"
               )
             ]
           )
@@ -152,20 +165,20 @@ jobs:
       - name: Commit manifest & tag
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Libbox Release ${{ env.tag }}"
+          commit_message: "Libbox Release ${{ steps.resolve.outputs.tag }}"
           commit_user_name: "liujixings"
           commit_user_email: "liujixings@outlook.com"
-          tagging_message: "${{ env.tag }}"
+          tagging_message: "${{ steps.resolve.outputs.tag }}"
           file_pattern: Package.swift
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          prerelease: ${{ env.prerelease == 'true' }}
-          tag_name: ${{ env.tag }}
-          name: ${{ env.tag_no_v }}
-          body: "Compiled from source tag: ${{ env.tag }}"
+          prerelease: ${{ steps.resolve.outputs.prerelease == 'true' }}
+          tag_name: ${{ steps.resolve.outputs.tag }}
+          name: ${{ steps.resolve.outputs.tag_no_v }}
+          body: "Compiled from source tag: ${{ steps.resolve.outputs.tag }}"
           files: |
-            sing-box/Libbox.xcframework.zip
+            Libbox.xcframework.zip
             sing-box-*.tipa

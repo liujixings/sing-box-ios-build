@@ -62,7 +62,6 @@ jobs:
         if: steps.compare.outputs.release_update_needed == 'true'
         uses: peter-evans/repository-dispatch@v4
         with:
-          token: ${{ secrets.GH_TOKEN }}
           event-type: release
           client-payload: '{"version": "${{ steps.latest.outputs.release }}"}'
 
@@ -70,6 +69,5 @@ jobs:
         if: steps.compare.outputs.prerelease_update_needed == 'true'
         uses: peter-evans/repository-dispatch@v4
         with:
-          token: ${{ secrets.GH_TOKEN }}
           event-type: prerelease
           client-payload: '{"version": "${{ steps.latest.outputs.prerelease }}"}'
