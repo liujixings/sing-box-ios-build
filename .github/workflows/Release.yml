@@ -35,9 +35,11 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "repository_dispatch" && "${{ github.event.action }}" == "prerelease" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "prerelease" ]]; then
             prerelease=true
+            update_apple=true
             fallback_tag="${{ vars.PRERELEASE }}"
           else
             prerelease=false
+            update_apple=false
             fallback_tag="${{ vars.RELEASE }}"
           fi
 
@@ -57,7 +59,7 @@ jobs:
           tag_no_v="${tag#v}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "tag_no_v=${tag_no_v}" >> "$GITHUB_OUTPUT"
-          echo "update_apple=true" >> "$GITHUB_OUTPUT"
+          echo "update_apple=${update_apple}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
@@ -81,6 +83,8 @@ jobs:
           echo "sing-box-${{ steps.resolve.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           git clone -b ${{ steps.resolve.outputs.tag }} --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
 
+          cd $HOME/sing-box
+
           if [ "${{ steps.resolve.outputs.update_apple }}" = "true" ]; then
             rm -rf clients/apple
             git clone --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box-for-apple.git clients/apple
@@ -89,8 +93,6 @@ jobs:
           export XCODEPROJ_NAME=sing-box
           export APPLICATION_NAME=sing-box
           export SCHEME_NAME=SFI
-
-          cd $HOME/sing-box
 
           make lib_install
           export PATH="$PATH:$(go env GOPATH)/bin"
