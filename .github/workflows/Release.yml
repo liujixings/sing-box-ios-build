@@ -1,4 +1,4 @@
-name: Release
+name: Build Sing-Box TIPA and xcframework
 
 on:
   workflow_dispatch:
